@@ -4,10 +4,18 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.1"
+    }
   }
 }
 
-# Cost Budget with alerts
+# Get current AWS account ID and region
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+# Cost Budget with alerts - FIXED SYNTAX
 resource "aws_budgets_budget" "monthly_cost" {
   name         = "${var.name_prefix}-monthly-budget"
   budget_type  = "COST"
@@ -18,12 +26,15 @@ resource "aws_budgets_budget" "monthly_cost" {
   # Budget period
   time_period_start = formatdate("YYYY-MM-01_00:00", timestamp())
   
-  # Cost filters
-  cost_filters {
-    tag {
-      key    = "Project"
-      values = [var.project_name]
-    }
+  # FIXED: Proper cost_filter syntax
+  cost_filter {
+    name   = "TagKey"
+    values = ["Project"]
+  }
+
+  cost_filter {
+    name   = "Tag"
+    values = ["Project$${var.project_name}"]
   }
 
   # Budget notifications
@@ -31,7 +42,7 @@ resource "aws_budgets_budget" "monthly_cost" {
     comparison_operator        = "GREATER_THAN"
     threshold                 = 80
     threshold_type            = "PERCENTAGE"
-    notification_type         = "ACTUAL"
+    notification_type          = "ACTUAL"
     subscriber_email_addresses = var.budget_alert_emails
   }
 
@@ -54,7 +65,7 @@ resource "aws_budgets_budget" "monthly_cost" {
   tags = var.tags
 }
 
-# Service-specific budgets
+# Service-specific budgets - FIXED SYNTAX
 resource "aws_budgets_budget" "compute_budget" {
   name         = "${var.name_prefix}-compute-budget"
   budget_type  = "COST"
@@ -64,12 +75,15 @@ resource "aws_budgets_budget" "compute_budget" {
   
   time_period_start = formatdate("YYYY-MM-01_00:00", timestamp())
   
-  cost_filters {
-    service = ["Amazon Elastic Compute Cloud - Compute", "Amazon EC2 Container Service"]
-    tag {
-      key    = "Project"
-      values = [var.project_name]
-    }
+  # FIXED: Multiple cost_filter blocks with proper syntax
+  cost_filter {
+    name   = "Service"
+    values = ["Amazon Elastic Compute Cloud - Compute", "Amazon EC2 Container Service"]
+  }
+
+  cost_filter {
+    name   = "Tag"
+    values = ["Project$${var.project_name}"]
   }
 
   notification {
@@ -92,12 +106,15 @@ resource "aws_budgets_budget" "database_budget" {
   
   time_period_start = formatdate("YYYY-MM-01_00:00", timestamp())
   
-  cost_filters {
-    service = ["Amazon Relational Database Service", "Amazon ElastiCache"]
-    tag {
-      key    = "Project"
-      values = [var.project_name]
-    }
+  # FIXED: Proper cost_filter syntax
+  cost_filter {
+    name   = "Service"
+    values = ["Amazon Relational Database Service", "Amazon ElastiCache"]
+  }
+
+  cost_filter {
+    name   = "Tag"
+    values = ["Project$${var.project_name}"]
   }
 
   notification {
@@ -111,15 +128,18 @@ resource "aws_budgets_budget" "database_budget" {
   tags = var.tags
 }
 
-# Cost Anomaly Detection
+# Cost Anomaly Detection - FIXED SYNTAX
 resource "aws_ce_anomaly_detector" "cost_anomaly" {
   name         = "${var.name_prefix}-cost-anomaly-detector"
   monitor_type = "DIMENSIONAL"
 
+  # FIXED: Correct specification format
   specification = jsonencode({
-    DIMENSION_KEY   = "SERVICE"
-    DIMENSION_VALUE = "EC2-Instance"
-    MATCH_OPTIONS   = ["EQUALS"]
+    "Dimension" = {
+      "Key"          = "SERVICE"
+      "Values"       = ["EC2-Instance"]
+      "MatchOptions" = ["EQUALS"]
+    }
   })
 
   tags = var.tags
@@ -366,28 +386,23 @@ data "archive_file" "cost_optimizer" {
   }
 }
 
-# Auto Scaling for cost optimization
+# Auto Scaling for cost optimization - ONLY if autoscaling_group_name is provided
 resource "aws_autoscaling_schedule" "scale_down_non_prod" {
-  count                  = var.environment != "production" ? 1 : 0
+  count                  = var.environment != "production" && var.autoscaling_group_name != "" ? 1 : 0
   scheduled_action_name  = "${var.name_prefix}-scale-down-evening"
   min_size              = 0
   max_size              = 1
   desired_capacity      = 0
   recurrence            = "0 20 * * *" # Scale down at 8 PM UTC
   autoscaling_group_name = var.autoscaling_group_name
-
-  # Only apply to non-production environments
-  depends_on = [var.environment]
 }
 
 resource "aws_autoscaling_schedule" "scale_up_non_prod" {
-  count                  = var.environment != "production" ? 1 : 0
+  count                  = var.environment != "production" && var.autoscaling_group_name != "" ? 1 : 0
   scheduled_action_name  = "${var.name_prefix}-scale-up-morning"
   min_size              = 1
   max_size              = 10
   desired_capacity      = 2
   recurrence            = "0 8 * * *" # Scale up at 8 AM UTC
   autoscaling_group_name = var.autoscaling_group_name
-
-  depends_on = [var.environment]
 }
