@@ -13,12 +13,10 @@ resource "aws_opensearch_domain" "main" {
   engine_version = var.engine_version
 
   cluster_config {
-    instance_type            = var.instance_type
-    instance_count          = var.instance_count
+    instance_type           = var.instance_type
+    instance_count         = var.instance_count
     dedicated_master_enabled = var.dedicated_master_enabled
-    master_instance_type    = var.master_instance_type
-    master_instance_count   = var.master_instance_count
-    zone_awareness_enabled  = var.zone_awareness_enabled
+    zone_awareness_enabled = var.zone_awareness_enabled
 
     dynamic "zone_awareness_config" {
       for_each = var.zone_awareness_enabled ? [1] : []
@@ -28,8 +26,8 @@ resource "aws_opensearch_domain" "main" {
     }
 
     warm_enabled = var.warm_enabled
-    warm_count   = var.warm_count
-    warm_type    = var.warm_type
+    warm_count   = var.warm_enabled ? var.warm_count : null
+    warm_type    = var.warm_enabled ? var.warm_type : null
 
     cold_storage_options {
       enabled = var.cold_storage_enabled
@@ -40,7 +38,7 @@ resource "aws_opensearch_domain" "main" {
     ebs_enabled = true
     volume_type = var.volume_type
     volume_size = var.volume_size
-    iops        = var.volume_type == "gp3" ? var.volume_iops : null
+    iops        = contains(["gp3", "io1", "io2"], var.volume_type) ? var.volume_iops : null
     throughput  = var.volume_type == "gp3" ? var.volume_throughput : null
   }
 
@@ -67,25 +65,31 @@ resource "aws_opensearch_domain" "main" {
     anonymous_auth_enabled         = false
     internal_user_database_enabled = var.internal_user_database_enabled
 
-    master_user_options {
-      master_user_name     = var.master_user_name
-      master_user_password = var.master_user_password
+    dynamic "master_user_options" {
+      for_each = var.fine_grained_access_control_enabled ? [1] : []
+      content {
+        master_user_name     = var.master_user_name
+        master_user_password = var.master_user_password
+      }
     }
   }
 
   log_publishing_options {
     cloudwatch_log_group_arn = aws_cloudwatch_log_group.opensearch_index_slow.arn
     log_type                 = "INDEX_SLOW_LOGS"
+    enabled                  = true
   }
 
   log_publishing_options {
     cloudwatch_log_group_arn = aws_cloudwatch_log_group.opensearch_search_slow.arn
     log_type                 = "SEARCH_SLOW_LOGS"
+    enabled                  = true
   }
 
   log_publishing_options {
     cloudwatch_log_group_arn = aws_cloudwatch_log_group.opensearch_es_application.arn
     log_type                 = "ES_APPLICATION_LOGS"
+    enabled                  = true
   }
 
   advanced_options = {
@@ -98,12 +102,21 @@ resource "aws_opensearch_domain" "main" {
     Name = "${var.name_prefix}-opensearch"
   })
 
-  depends_on = [aws_iam_service_linked_role.opensearch]
+  depends_on = [
+    aws_iam_service_linked_role.opensearch,
+    aws_cloudwatch_log_group.opensearch_index_slow,
+    aws_cloudwatch_log_group.opensearch_search_slow,
+    aws_cloudwatch_log_group.opensearch_es_application
+  ]
 }
 
 # Service-linked role for OpenSearch
 resource "aws_iam_service_linked_role" "opensearch" {
-  aws_service_name = "opensearchserverless.amazonaws.com"
+  aws_service_name = "es.amazonaws.com"
+
+  lifecycle {
+    ignore_changes = [aws_service_name]
+  }
 }
 
 # Security group for OpenSearch
@@ -116,13 +129,18 @@ resource "aws_security_group" "opensearch" {
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
+    description = "HTTPS access from VPC"
   }
 
-  ingress {
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    security_groups = var.allowed_security_groups
+  dynamic "ingress" {
+    for_each = length(var.allowed_security_groups) > 0 ? [1] : []
+    content {
+      from_port       = 443
+      to_port         = 443
+      protocol        = "tcp"
+      security_groups = var.allowed_security_groups
+      description     = "HTTPS access from allowed security groups"
+    }
   }
 
   egress {
@@ -130,6 +148,7 @@ resource "aws_security_group" "opensearch" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "All outbound traffic"
   }
 
   tags = merge(var.tags, {
@@ -161,6 +180,16 @@ resource "aws_cloudwatch_log_group" "opensearch_es_application" {
   retention_in_days = var.log_retention_days
 
   tags = var.tags
+}
+
+# CloudWatch Log Group for Search API
+resource "aws_cloudwatch_log_group" "search_api" {
+  name              = "/aws/apigateway/${var.name_prefix}-search"
+  retention_in_days = var.log_retention_days
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-search-api-logs"
+  })
 }
 
 # DynamoDB table for search indexing metadata
@@ -231,68 +260,6 @@ resource "aws_sqs_queue" "search_indexing_dlq" {
   tags = var.tags
 }
 
-# Lambda function for search indexing
-resource "aws_lambda_function" "search_indexer" {
-  filename         = data.archive_file.search_indexer.output_path
-  function_name    = "${var.name_prefix}-search-indexer"
-  role            = aws_iam_role.search_lambda.arn
-  handler         = "search_indexer.handler"
-  source_code_hash = data.archive_file.search_indexer.output_base64sha256
-  runtime         = "python3.11"
-  timeout         = 300
-  memory_size     = 1024
-
-  environment {
-    variables = {
-      OPENSEARCH_ENDPOINT = aws_opensearch_domain.main.endpoint
-      METADATA_TABLE      = aws_dynamodb_table.search_index_metadata.name
-      REDIS_ENDPOINT      = var.redis_endpoint
-      BATCH_SIZE          = var.indexing_batch_size
-      MAX_RETRIES         = var.max_indexing_retries
-    }
-  }
-
-  vpc_config {
-    subnet_ids         = var.subnet_ids
-    security_group_ids = [aws_security_group.search_lambda.id]
-  }
-
-  reserved_concurrent_executions = var.lambda_concurrent_executions
-
-  tags = var.tags
-}
-
-# Lambda function for search API
-resource "aws_lambda_function" "search_api" {
-  filename         = data.archive_file.search_api.output_path
-  function_name    = "${var.name_prefix}-search-api"
-  role            = aws_iam_role.search_lambda.arn
-  handler         = "search_api.handler"
-  source_code_hash = data.archive_file.search_api.output_base64sha256
-  runtime         = "python3.11"
-  timeout         = 30
-  memory_size     = 512
-
-  environment {
-    variables = {
-      OPENSEARCH_ENDPOINT = aws_opensearch_domain.main.endpoint
-      REDIS_ENDPOINT      = var.redis_endpoint
-      CACHE_TTL          = var.search_cache_ttl
-      MAX_RESULTS        = var.max_search_results
-      ENABLE_ANALYTICS   = var.enable_search_analytics
-    }
-  }
-
-  vpc_config {
-    subnet_ids         = var.subnet_ids
-    security_group_ids = [aws_security_group.search_lambda.id]
-  }
-
-  reserved_concurrent_executions = var.lambda_concurrent_executions
-
-  tags = var.tags
-}
-
 # Security group for Lambda functions
 resource "aws_security_group" "search_lambda" {
   name_prefix = "${var.name_prefix}-search-lambda-"
@@ -303,6 +270,7 @@ resource "aws_security_group" "search_lambda" {
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTPS access to internet"
   }
 
   egress {
@@ -310,6 +278,7 @@ resource "aws_security_group" "search_lambda" {
     to_port         = 443
     protocol        = "tcp"
     security_groups = [aws_security_group.opensearch.id]
+    description     = "HTTPS access to OpenSearch"
   }
 
   egress {
@@ -317,6 +286,7 @@ resource "aws_security_group" "search_lambda" {
     to_port     = 6379
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
+    description = "Redis access"
   }
 
   tags = merge(var.tags, {
@@ -395,6 +365,15 @@ resource "aws_iam_role_policy" "search_lambda" {
           aws_sqs_queue.search_indexing.arn,
           aws_sqs_queue.search_indexing_dlq.arn
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
       }
     ]
   })
@@ -405,6 +384,93 @@ resource "aws_iam_role_policy_attachment" "search_lambda_vpc" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
+# Lambda function for search indexing
+resource "aws_lambda_function" "search_indexer" {
+  filename         = data.archive_file.search_indexer.output_path
+  function_name    = "${var.name_prefix}-search-indexer"
+  role            = aws_iam_role.search_lambda.arn
+  handler         = "search_indexer.handler"
+  source_code_hash = data.archive_file.search_indexer.output_base64sha256
+  runtime         = "python3.11"
+  timeout         = 300
+  memory_size     = 1024
+
+  environment {
+    variables = {
+      OPENSEARCH_ENDPOINT = aws_opensearch_domain.main.endpoint
+      METADATA_TABLE      = aws_dynamodb_table.search_index_metadata.name
+      REDIS_ENDPOINT      = var.redis_endpoint
+      BATCH_SIZE          = tostring(var.indexing_batch_size)
+      MAX_RETRIES         = tostring(var.max_indexing_retries)
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = var.subnet_ids
+    security_group_ids = [aws_security_group.search_lambda.id]
+  }
+
+  reserved_concurrent_executions = var.lambda_concurrent_executions
+
+  tags = var.tags
+
+  depends_on = [
+    aws_iam_role_policy_attachment.search_lambda_vpc,
+    aws_cloudwatch_log_group.lambda_search_indexer
+  ]
+}
+
+# Lambda function for search API
+resource "aws_lambda_function" "search_api" {
+  filename         = data.archive_file.search_api.output_path
+  function_name    = "${var.name_prefix}-search-api"
+  role            = aws_iam_role.search_lambda.arn
+  handler         = "search_api.handler"
+  source_code_hash = data.archive_file.search_api.output_base64sha256
+  runtime         = "python3.11"
+  timeout         = 30
+  memory_size     = 512
+
+  environment {
+    variables = {
+      OPENSEARCH_ENDPOINT = aws_opensearch_domain.main.endpoint
+      REDIS_ENDPOINT      = var.redis_endpoint
+      CACHE_TTL          = tostring(var.search_cache_ttl)
+      MAX_RESULTS        = tostring(var.max_search_results)
+      ENABLE_ANALYTICS   = tostring(var.enable_search_analytics)
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = var.subnet_ids
+    security_group_ids = [aws_security_group.search_lambda.id]
+  }
+
+  reserved_concurrent_executions = var.lambda_concurrent_executions
+
+  tags = var.tags
+
+  depends_on = [
+    aws_iam_role_policy_attachment.search_lambda_vpc,
+    aws_cloudwatch_log_group.lambda_search_api
+  ]
+}
+
+# CloudWatch Log Groups for Lambda functions
+resource "aws_cloudwatch_log_group" "lambda_search_indexer" {
+  name              = "/aws/lambda/${var.name_prefix}-search-indexer"
+  retention_in_days = var.log_retention_days
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_log_group" "lambda_search_api" {
+  name              = "/aws/lambda/${var.name_prefix}-search-api"
+  retention_in_days = var.log_retention_days
+
+  tags = var.tags
+}
+
 # SQS event source mapping
 resource "aws_lambda_event_source_mapping" "search_indexing" {
   event_source_arn = aws_sqs_queue.search_indexing.arn
@@ -412,6 +478,8 @@ resource "aws_lambda_event_source_mapping" "search_indexing" {
   batch_size       = 10
   
   maximum_batching_window_in_seconds = 5
+
+  depends_on = [aws_lambda_function.search_indexer]
 }
 
 # API Gateway for search API
@@ -485,17 +553,7 @@ resource "aws_lambda_permission" "allow_search_api_gateway" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.search_api.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.search_api.execution_arn}/*/*/*"
-}
-
-# CloudWatch Log Group for Search API
-resource "aws_cloudwatch_log_group" "search_api" {
-  name              = "/aws/apigateway/${var.name_prefix}-search"
-  retention_in_days = 14
-
-  tags = merge(var.tags, {
-    Name = "${var.name_prefix}-search-api-logs"
-  })
+  source_arn    = "${aws_apigatewayv2_api.search_api.execution_arn}/*/*"
 }
 
 # CloudWatch alarms for monitoring
