@@ -1,3 +1,4 @@
+# terraform/environments/prod/main.tf
 terraform {
   required_version = ">= 1.0"
   required_providers {
@@ -27,6 +28,11 @@ data "aws_availability_zones" "available" {
 
 data "aws_caller_identity" "current" {}
 
+data "aws_route53_zone" "main" {
+  name         = var.domain_name
+  private_zone = false
+}
+
 # Local values
 locals {
   common_tags = {
@@ -37,7 +43,6 @@ locals {
   }
   
   name_prefix = "${var.project_name}-${var.environment}"
-  
   availability_zones = slice(data.aws_availability_zones.available.names, 0, 3)
 }
 
@@ -68,6 +73,19 @@ module "security" {
 # IAM Module
 module "iam" {
   source = "../../modules/iam"
+  
+  name_prefix = local.name_prefix
+  s3_bucket_arns = [
+    module.storage.media_bucket_arn,
+    module.storage.static_bucket_arn
+  ]
+  
+  tags = local.common_tags
+}
+
+# Storage Module (must come before other modules that reference it)
+module "storage" {
+  source = "../../modules/storage"
   
   name_prefix = local.name_prefix
   
@@ -109,31 +127,19 @@ module "redis" {
   tags = local.common_tags
 }
 
-# Storage Module
-module "storage" {
-  source = "../../modules/storage/s3"
+# SSL Certificate Module
+module "ssl" {
+  source = "../../modules/ssl"
   
-  name_prefix = local.name_prefix
-  
-  tags = local.common_tags
-}
-
-# CloudFront Module
-module "cloudfront" {
-  source = "../../modules/storage/cloudfront"
-  
-  name_prefix          = local.name_prefix
-  domain_name         = var.domain_name
-  s3_bucket_domain    = module.storage.media_bucket_domain_name
-  alb_domain_name     = module.load_balancer.dns_name
-  certificate_arn     = module.ssl.certificate_arn
+  domain_name = var.domain_name
+  zone_id     = data.aws_route53_zone.main.zone_id
   
   tags = local.common_tags
 }
 
 # Load Balancer Module
 module "load_balancer" {
-  source = "../../modules/networking/alb"
+  source = "../../modules/load_balancer"
   
   name_prefix        = local.name_prefix
   vpc_id            = module.networking.vpc_id
@@ -144,19 +150,32 @@ module "load_balancer" {
   tags = local.common_tags
 }
 
-# SSL Certificate Module
-module "ssl" {
-  source = "../../modules/networking/ssl"
+# CloudFront Module
+module "cloudfront" {
+  source = "../../modules/cloudfront"
   
-  domain_name = var.domain_name
-  zone_id     = var.route53_zone_id
+  name_prefix          = local.name_prefix
+  domain_name         = var.domain_name
+  s3_bucket_domain    = module.storage.media_bucket_domain_name
+  alb_domain_name     = module.load_balancer.dns_name
+  certificate_arn     = module.ssl.certificate_arn
+  
+  tags = local.common_tags
+}
+
+# Monitoring Module (must come before ECS module)
+module "monitoring" {
+  source = "../../modules/monitoring"
+  
+  name_prefix  = local.name_prefix
+  cluster_name = "${local.name_prefix}-cluster"
   
   tags = local.common_tags
 }
 
 # ECS Compute Module
 module "ecs" {
-  source = "../../modules/compute/ecs"
+  source = "../../modules/ecs"
   
   name_prefix         = local.name_prefix
   cluster_name       = "${local.name_prefix}-cluster"
@@ -230,7 +249,7 @@ module "ecs" {
 
 # Auto Scaling Module
 module "autoscaling" {
-  source = "../../modules/compute/autoscaling"
+  source = "../../modules/autoscaling"
   
   name_prefix   = local.name_prefix
   cluster_name  = module.ecs.cluster_name
@@ -242,23 +261,38 @@ module "autoscaling" {
   tags = local.common_tags
 }
 
-# Monitoring Module
-module "monitoring" {
-  source = "../../modules/monitoring/cloudwatch"
-  
-  name_prefix  = local.name_prefix
-  cluster_name = module.ecs.cluster_name
-  
-  tags = local.common_tags
-}
-
 # SNS Alerts Module
 module "alerts" {
-  source = "../../modules/monitoring/sns"
+  source = "../../modules/alerts"
   
   name_prefix    = local.name_prefix
   alert_email    = var.alert_email
   slack_webhook  = var.slack_webhook_url
   
   tags = local.common_tags
+}
+
+# Route 53 Records
+resource "aws_route53_record" "main" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = var.domain_name
+  type    = "A"
+
+  alias {
+    name                   = module.cloudfront.domain_name
+    zone_id                = module.cloudfront.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "api" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = "api.${var.domain_name}"
+  type    = "A"
+
+  alias {
+    name                   = module.load_balancer.dns_name
+    zone_id                = module.load_balancer.zone_id
+    evaluate_target_health = true
+  }
 }

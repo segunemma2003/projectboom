@@ -3,9 +3,16 @@ variable "name_prefix" {
   type        = string
 }
 
-variable "cluster_name" {
-  description = "ECS cluster name"
+variable "alert_email" {
+  description = "Email for alerts"
   type        = string
+  default     = ""
+}
+
+variable "slack_webhook" {
+  description = "Slack webhook URL"
+  type        = string
+  default     = ""
 }
 
 variable "tags" {

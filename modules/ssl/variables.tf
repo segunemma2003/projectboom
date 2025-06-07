@@ -1,10 +1,10 @@
-variable "name_prefix" {
-  description = "Name prefix for resources"
+variable "domain_name" {
+  description = "Domain name for SSL certificate"
   type        = string
 }
 
-variable "cluster_name" {
-  description = "ECS cluster name"
+variable "zone_id" {
+  description = "Route 53 hosted zone ID"
   type        = string
 }
 
