@@ -1,0 +1,91 @@
+- name: Security Hardening for Social Media Platform
+  hosts: all
+  become: yes
+  vars:
+    fail2ban_enabled: true
+    ufw_enabled: true
+    
+  tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+        autoremove: yes
+
+    - name: Install security packages
+      apt:
+        name:
+          - fail2ban
+          - ufw
+          - unattended-upgrades
+          - aide
+          - rkhunter
+          - chkrootkit
+        state: present
+
+    - name: Configure automatic security updates
+      template:
+        src: 50unattended-upgrades.j2
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        backup: yes
+
+    - name: Configure fail2ban
+      template:
+        src: jail.local.j2
+        dest: /etc/fail2ban/jail.local
+        backup: yes
+      notify: restart fail2ban
+
+    - name: Enable and start fail2ban
+      systemd:
+        name: fail2ban
+        enabled: yes
+        state: started
+
+    - name: Configure UFW firewall
+      ufw:
+        rule: "{{ item.rule }}"
+        port: "{{ item.port }}"
+        proto: "{{ item.proto | default('tcp') }}"
+      loop:
+        - { rule: 'allow', port: '22' }
+        - { rule: 'allow', port: '80' }
+        - { rule: 'allow', port: '443' }
+        - { rule: 'allow', port: '8000' }
+        - { rule: 'allow', port: '8001' }
+      when: ufw_enabled
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        policy: deny
+      when: ufw_enabled
+
+    - name: Disable unnecessary services
+      systemd:
+        name: "{{ item }}"
+        enabled: no
+        state: stopped
+      loop:
+        - cups
+        - avahi-daemon
+        - bluetooth
+      ignore_errors: yes
+
+    - name: Set file permissions
+      file:
+        path: "{{ item.path }}"
+        mode: "{{ item.mode }}"
+        owner: "{{ item.owner | default('root') }}"
+        group: "{{ item.group | default('root') }}"
+      loop:
+        - { path: '/etc/passwd', mode: '0644' }
+        - { path: '/etc/shadow', mode: '0640' }
+        - { path: '/etc/group', mode: '0644' }
+        - { path: '/etc/gshadow', mode: '0640' }
+
+  handlers:
+    - name: restart fail2ban
+      systemd:
+        name: fail2ban
+        state: restarted

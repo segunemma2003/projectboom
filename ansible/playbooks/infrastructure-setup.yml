@@ -1,0 +1,97 @@
+- name: Setup Social Media Platform Infrastructure
+  hosts: localhost
+  gather_facts: false
+  vars:
+    environment: "{{ env | default('development') }}"
+    aws_region: "{{ region | default('eu-west-1') }}"
+    project_name: social-platform
+    
+  tasks:
+    - name: Install required packages
+      pip:
+        name:
+          - boto3
+          - botocore
+          - kubernetes
+          - openshift
+        state: present
+
+    - name: Create EKS cluster for ArgoCD
+      kubernetes.core.k8s:
+        name: "{{ project_name }}-{{ environment }}"
+        api_version: eksctl.io/v1alpha5
+        kind: ClusterConfig
+        definition:
+          metadata:
+            name: "{{ project_name }}-{{ environment }}"
+            region: "{{ aws_region }}"
+          nodeGroups:
+            - name: managed-nodes
+              instanceType: t3.medium
+              desiredCapacity: 3
+              minSize: 2
+              maxSize: 10
+              volumeSize: 20
+              ssh:
+                allow: true
+          addons:
+            - name: vpc-cni
+            - name: coredns
+            - name: kube-proxy
+            - name: aws-ebs-csi-driver
+
+    - name: Install ArgoCD
+      kubernetes.core.helm:
+        name: argocd
+        chart_ref: argo/argo-cd
+        release_namespace: argocd
+        create_namespace: true
+        values:
+          server:
+            service:
+              type: LoadBalancer
+            config:
+              url: "https://argocd.{{ domain_name }}"
+            extraArgs:
+              - --insecure
+          configs:
+            secret:
+              argocdServerAdminPassword: "{{ argocd_admin_password | password_hash('bcrypt') }}"
+
+    - name: Install Prometheus and Grafana
+      kubernetes.core.helm:
+        name: kube-prometheus-stack
+        chart_ref: prometheus-community/kube-prometheus-stack
+        release_namespace: monitoring
+        create_namespace: true
+        values:
+          grafana:
+            service:
+              type: LoadBalancer
+            adminPassword: "{{ grafana_admin_password }}"
+
+    - name: Configure DataDog agent
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: datadog-secret
+            namespace: default
+          data:
+            api-key: "{{ datadog_api_key | b64encode }}"
+
+    - name: Deploy DataDog agent
+      kubernetes.core.helm:
+        name: datadog
+        chart_ref: datadog/datadog
+        release_namespace: datadog
+        create_namespace: true
+        values:
+          datadog:
+            apiKeyExistingSecret: datadog-secret
+            site: datadoghq.com
+            logs:
+              enabled: true
+            apm:
+              enabled: true

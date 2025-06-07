@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: social-platform
+  namespace: argocd
+spec:
+  description: Social Media Platform Project
+  sourceRepos:
+  - 'https://bitbucket.org/yourorg/social-platform-k8s-manifests'
+  destinations:
+  - namespace: 'social-platform-*'
+    server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+  - group: ''
+    kind: Namespace
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRole
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRoleBinding
+  namespaceResourceWhitelist:
+  - group: ''
+    kind: Service
+  - group: ''
+    kind: ConfigMap
+  - group: ''
+    kind: Secret
+  - group: apps
+    kind: Deployment
+  - group: apps
+    kind: ReplicaSet
+  - group: ''
+    kind: Pod
+  roles:
+  - name: developer
+    policies:
+    - p, proj:social-platform:developer, applications, get, social-platform/*, allow
+    - p, proj:social-platform:developer, applications, sync, social-platform/social-platform-dev, allow
+    - p, proj:social-platform:developer, applications, sync, social-platform/social-platform-staging, allow
+    groups:
+    - social-platform-developers
+  - name: admin
+    policies:
+    - p, proj:social-platform:admin, applications, *, social-platform/*, allow
+    - p, proj:social-platform:admin, repositories, *, *, allow
+    groups:
+    - social-platform-admins

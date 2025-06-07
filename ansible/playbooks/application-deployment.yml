@@ -1,0 +1,183 @@
+- name: Deploy Social Media Platform Application
+  hosts: localhost
+  gather_facts: false
+  vars:
+    environment: "{{ env | default('development') }}"
+    image_tag: "{{ tag | default('latest') }}"
+    
+  tasks:
+    - name: Create namespace
+      kubernetes.core.k8s:
+        name: "social-platform-{{ environment }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Deploy database secrets
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: database-credentials
+            namespace: "social-platform-{{ environment }}"
+          type: Opaque
+          data:
+            username: "{{ database_username | b64encode }}"
+            password: "{{ database_password | b64encode }}"
+            host: "{{ database_host | b64encode }}"
+
+    - name: Deploy Redis configuration
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: redis-config
+            namespace: "social-platform-{{ environment }}"
+          data:
+            redis-host: "{{ redis_host }}"
+            redis-port: "6379"
+
+    - name: Deploy API application
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: social-platform-api
+            namespace: "social-platform-{{ environment }}"
+            labels:
+              app: social-platform-api
+              environment: "{{ environment }}"
+          spec:
+            replicas: "{{ api_replicas | default(3) }}"
+            selector:
+              matchLabels:
+                app: social-platform-api
+            template:
+              metadata:
+                labels:
+                  app: social-platform-api
+              spec:
+                containers:
+                - name: api
+                  image: "{{ ecr_repository }}/api:{{ image_tag }}"
+                  ports:
+                  - containerPort: 8000
+                  env:
+                  - name: ENVIRONMENT
+                    value: "{{ environment }}"
+                  - name: DATABASE_HOST
+                    valueFrom:
+                      secretKeyRef:
+                        name: database-credentials
+                        key: host
+                  - name: DATABASE_USERNAME
+                    valueFrom:
+                      secretKeyRef:
+                        name: database-credentials
+                        key: username
+                  - name: DATABASE_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: database-credentials
+                        key: password
+                  - name: REDIS_HOST
+                    valueFrom:
+                      configMapKeyRef:
+                        name: redis-config
+                        key: redis-host
+                  resources:
+                    requests:
+                      memory: "512Mi"
+                      cpu: "250m"
+                    limits:
+                      memory: "2Gi"
+                      cpu: "1000m"
+                  livenessProbe:
+                    httpGet:
+                      path: /health/
+                      port: 8000
+                    initialDelaySeconds: 30
+                    periodSeconds: 10
+                  readinessProbe:
+                    httpGet:
+                      path: /health/
+                      port: 8000
+                    initialDelaySeconds: 5
+                    periodSeconds: 5
+
+    - name: Deploy API service
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: social-platform-api
+            namespace: "social-platform-{{ environment }}"
+          spec:
+            selector:
+              app: social-platform-api
+            ports:
+            - port: 80
+              targetPort: 8000
+            type: LoadBalancer
+
+    - name: Deploy WebSocket application
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: social-platform-websocket
+            namespace: "social-platform-{{ environment }}"
+            labels:
+              app: social-platform-websocket
+              environment: "{{ environment }}"
+          spec:
+            replicas: "{{ websocket_replicas | default(2) }}"
+            selector:
+              matchLabels:
+                app: social-platform-websocket
+            template:
+              metadata:
+                labels:
+                  app: social-platform-websocket
+              spec:
+                containers:
+                - name: websocket
+                  image: "{{ ecr_repository }}/websocket:{{ image_tag }}"
+                  ports:
+                  - containerPort: 8001
+                  env:
+                  - name: ENVIRONMENT
+                    value: "{{ environment }}"
+                  - name: REDIS_HOST
+                    valueFrom:
+                      configMapKeyRef:
+                        name: redis-config
+                        key: redis-host
+                  resources:
+                    requests:
+                      memory: "256Mi"
+                      cpu: "125m"
+                    limits:
+                      memory: "1Gi"
+                      cpu: "500m"
+
+    - name: Deploy WebSocket service
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: social-platform-websocket
+            namespace: "social-platform-{{ environment }}"
+          spec:
+            selector:
+              app: social-platform-websocket
+            ports:
+            - port: 80
+              targetPort: 8001
+            type: LoadBalancer
