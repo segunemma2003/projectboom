@@ -183,6 +183,10 @@ module "ecs" {
           value = var.environment
         },
         {
+          name  = "DEBUG"
+          value = var.environment == "development" ? "True" : "False"
+        },
+        {
           name  = "DATABASE_HOST"
           value = module.database.endpoint
         },
@@ -193,6 +197,14 @@ module "ecs" {
         {
           name  = "S3_BUCKET_NAME"
           value = module.storage.media_bucket_name
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
+        },
+        {
+          name  = "ALLOWED_HOSTS"
+          value = var.domain_name
         }
       ]
       secrets = [
@@ -219,6 +231,10 @@ module "ecs" {
         {
           name  = "REDIS_HOST"
           value = module.redis.primary_endpoint
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
         }
       ]
       secrets = []
@@ -232,6 +248,12 @@ module "ecs" {
   security_group_ids = [module.security.ecs_security_group_id]
   subnet_ids        = module.networking.private_subnet_ids
   log_group_name    = module.monitoring.log_group_name
+  
+  # Add target group dependency
+  target_group_arns = [
+    module.load_balancer.api_target_group_arn,
+    module.load_balancer.websocket_target_group_arn
+  ]
   
   tags = local.common_tags
 }

@@ -1,4 +1,3 @@
-# terraform/environments/prod/main.tf
 terraform {
   required_version = ">= 1.0"
   required_providers {
@@ -46,7 +45,7 @@ locals {
   availability_zones = slice(data.aws_availability_zones.available.names, 0, 3)
 }
 
-# Networking Module
+# Networking Module - No dependencies
 module "networking" {
   source = "../../modules/networking"
   
@@ -58,7 +57,7 @@ module "networking" {
   tags = local.common_tags
 }
 
-# Security Module
+# Security Module - Depends on networking only
 module "security" {
   source = "../../modules/security"
   
@@ -70,7 +69,16 @@ module "security" {
   tags = local.common_tags
 }
 
-# IAM Module
+# Storage Module - No dependencies (MOVED BEFORE IAM)
+module "storage" {
+  source = "../../modules/storage"
+  
+  name_prefix = local.name_prefix
+  
+  tags = local.common_tags
+}
+
+# IAM Module - Now depends on storage (MOVED AFTER STORAGE)
 module "iam" {
   source = "../../modules/iam"
   
@@ -83,16 +91,7 @@ module "iam" {
   tags = local.common_tags
 }
 
-# Storage Module (must come before other modules that reference it)
-module "storage" {
-  source = "../../modules/storage"
-  
-  name_prefix = local.name_prefix
-  
-  tags = local.common_tags
-}
-
-# Database Module
+# Database Module - Depends on networking, security, and iam
 module "database" {
   source = "../../modules/database/rds"
   
@@ -112,7 +111,7 @@ module "database" {
   tags = local.common_tags
 }
 
-# Redis Module
+# Redis Module - Depends on networking and security
 module "redis" {
   source = "../../modules/database/redis"
   
@@ -127,7 +126,7 @@ module "redis" {
   tags = local.common_tags
 }
 
-# SSL Certificate Module
+# SSL Certificate Module - Independent
 module "ssl" {
   source = "../../modules/ssl"
   
@@ -137,7 +136,7 @@ module "ssl" {
   tags = local.common_tags
 }
 
-# Load Balancer Module
+# Load Balancer Module - Depends on networking, security, and ssl
 module "load_balancer" {
   source = "../../modules/load_balancer"
   
@@ -150,7 +149,7 @@ module "load_balancer" {
   tags = local.common_tags
 }
 
-# CloudFront Module
+# CloudFront Module - Depends on storage, load_balancer, and ssl
 module "cloudfront" {
   source = "../../modules/cloudfront"
   
@@ -163,7 +162,7 @@ module "cloudfront" {
   tags = local.common_tags
 }
 
-# Monitoring Module (must come before ECS module)
+# Monitoring Module - Independent (MOVED BEFORE ECS)
 module "monitoring" {
   source = "../../modules/monitoring"
   
@@ -173,7 +172,7 @@ module "monitoring" {
   tags = local.common_tags
 }
 
-# ECS Compute Module
+# ECS Compute Module - Depends on multiple modules
 module "ecs" {
   source = "../../modules/ecs"
   
@@ -194,6 +193,10 @@ module "ecs" {
           value = var.environment
         },
         {
+          name  = "DEBUG"
+          value = var.environment == "development" ? "True" : "False"
+        },
+        {
           name  = "DATABASE_HOST"
           value = module.database.endpoint
         },
@@ -204,6 +207,14 @@ module "ecs" {
         {
           name  = "S3_BUCKET_NAME"
           value = module.storage.media_bucket_name
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
+        },
+        {
+          name  = "ALLOWED_HOSTS"
+          value = var.domain_name
         }
       ]
       secrets = [
@@ -230,6 +241,10 @@ module "ecs" {
         {
           name  = "REDIS_HOST"
           value = module.redis.primary_endpoint
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
         }
       ]
       secrets = []
@@ -244,10 +259,16 @@ module "ecs" {
   subnet_ids        = module.networking.private_subnet_ids
   log_group_name    = module.monitoring.log_group_name
   
+  # Add target group dependency
+  target_group_arns = [
+    module.load_balancer.api_target_group_arn,
+    module.load_balancer.websocket_target_group_arn
+  ]
+  
   tags = local.common_tags
 }
 
-# Auto Scaling Module
+# Auto Scaling Module - Depends on ECS
 module "autoscaling" {
   source = "../../modules/autoscaling"
   
@@ -261,7 +282,7 @@ module "autoscaling" {
   tags = local.common_tags
 }
 
-# SNS Alerts Module
+# SNS Alerts Module - Independent
 module "alerts" {
   source = "../../modules/alerts"
   
@@ -272,7 +293,7 @@ module "alerts" {
   tags = local.common_tags
 }
 
-# Route 53 Records
+# Route 53 Records - Depends on cloudfront and load_balancer
 resource "aws_route53_record" "main" {
   zone_id = data.aws_route53_zone.main.zone_id
   name    = var.domain_name
@@ -294,5 +315,17 @@ resource "aws_route53_record" "api" {
     name                   = module.load_balancer.dns_name
     zone_id                = module.load_balancer.zone_id
     evaluate_target_health = true
+  }
+}
+
+resource "aws_route53_record" "cdn" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = "cdn.${var.domain_name}"
+  type    = "A"
+
+  alias {
+    name                   = module.cloudfront.domain_name
+    zone_id                = module.cloudfront.hosted_zone_id
+    evaluate_target_health = false
   }
 }

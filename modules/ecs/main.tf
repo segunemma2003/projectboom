@@ -69,12 +69,14 @@ resource "aws_ecs_task_definition" "app" {
       }
 
       healthCheck = {
-        command = each.value.health_check
-        interval = 30
-        timeout = 5
-        retries = 3
+        command     = each.value.health_check
+        interval    = 30
+        timeout     = 5
+        retries     = 3
         startPeriod = 60
       }
+
+      essential = true
     }
   ])
 
@@ -91,17 +93,8 @@ resource "aws_ecs_service" "app" {
   task_definition = aws_ecs_task_definition.app[each.key].arn
   desired_count   = each.value.desired_count
 
-  capacity_provider_strategy {
-    capacity_provider = "FARGATE"
-    weight            = var.fargate_weight
-    base              = var.fargate_base
-  }
-
-  capacity_provider_strategy {
-    capacity_provider = "FARGATE_SPOT"
-    weight            = var.fargate_spot_weight
-    base              = var.fargate_spot_base
-  }
+  # Use launch_type instead of capacity_provider_strategy for simplicity
+  launch_type = "FARGATE"
 
   network_configuration {
     security_groups  = var.security_group_ids
@@ -110,7 +103,7 @@ resource "aws_ecs_service" "app" {
   }
 
   dynamic "load_balancer" {
-    for_each = each.value.target_group_arn != null ? [1] : []
+    for_each = each.value.target_group_arn != null && each.value.target_group_arn != "" ? [1] : []
     content {
       target_group_arn = each.value.target_group_arn
       container_name   = each.key
@@ -118,12 +111,16 @@ resource "aws_ecs_service" "app" {
     }
   }
 
-  deployment_configuration {
-    maximum_percent         = 200
-    minimum_healthy_percent = 100
-  }
+  # REMOVED: deployment_configuration block completely
+  # Modern AWS provider uses default values:
+  # - maximum_percent = 200
+  # - minimum_healthy_percent = 100
 
   tags = merge(var.tags, {
     Name = "${var.name_prefix}-${each.key}-service"
   })
+
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 }
