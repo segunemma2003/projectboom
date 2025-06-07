@@ -17,6 +17,7 @@ resource "aws_lb_target_group" "api" {
   port     = 8000
   protocol = "HTTP"
   vpc_id   = var.vpc_id
+  target_type = "ip"
 
   health_check {
     enabled             = true
@@ -40,6 +41,7 @@ resource "aws_lb_target_group" "websocket" {
   port     = 8001
   protocol = "HTTP"
   vpc_id   = var.vpc_id
+  target_type = "ip"
 
   health_check {
     enabled             = true

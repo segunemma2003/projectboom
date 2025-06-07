@@ -17,3 +17,14 @@ output "websocket_target_group_arn" {
   description = "WebSocket target group ARN"
   value       = aws_lb_target_group.websocket.arn
 }
+
+# NEW - Missing outputs that your main.tf is referencing
+output "alb_full_name" {
+  description = "Full name of the Application Load Balancer"
+  value       = aws_lb.main.arn_suffix
+}
+
+output "https_listener_arn" {
+  description = "HTTPS listener ARN"
+  value       = aws_lb_listener.https.arn
+}

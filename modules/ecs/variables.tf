@@ -8,6 +8,11 @@ variable "cluster_name" {
   type        = string
 }
 
+variable "environment" {
+  description = "Environment name (development, staging, production)"
+  type        = string
+}
+
 variable "services" {
   description = "Map of services to create"
   type = map(object({
@@ -57,6 +62,12 @@ variable "log_group_name" {
 variable "aws_region" {
   description = "AWS region"
   type        = string
+}
+
+variable "target_group_arns" {
+  description = "Target group ARNs for dependency"
+  type        = list(string)
+  default     = []
 }
 
 variable "fargate_base" {

@@ -45,7 +45,7 @@ locals {
   availability_zones = slice(data.aws_availability_zones.available.names, 0, 3)
 }
 
-# Use same module structure as production but with different variables
+# Simplified modules for development
 module "networking" {
   source = "../../modules/networking"
   
@@ -142,18 +142,6 @@ module "load_balancer" {
   tags = local.common_tags
 }
 
-module "cloudfront" {
-  source = "../../modules/cloudfront"
-  
-  name_prefix          = local.name_prefix
-  domain_name         = var.domain_name
-  s3_bucket_domain    = module.storage.media_bucket_domain_name
-  alb_domain_name     = module.load_balancer.dns_name
-  certificate_arn     = module.ssl.certificate_arn
-  
-  tags = local.common_tags
-}
-
 module "monitoring" {
   source = "../../modules/monitoring"
   
@@ -183,10 +171,6 @@ module "ecs" {
           value = var.environment
         },
         {
-          name  = "DEBUG"
-          value = var.environment == "development" ? "True" : "False"
-        },
-        {
           name  = "DATABASE_HOST"
           value = module.database.endpoint
         },
@@ -197,14 +181,6 @@ module "ecs" {
         {
           name  = "S3_BUCKET_NAME"
           value = module.storage.media_bucket_name
-        },
-        {
-          name  = "AWS_DEFAULT_REGION"
-          value = var.aws_region
-        },
-        {
-          name  = "ALLOWED_HOSTS"
-          value = var.domain_name
         }
       ]
       secrets = [
@@ -216,31 +192,6 @@ module "ecs" {
       health_check     = ["CMD-SHELL", "curl -f http://localhost:${var.app_port}/health/ || exit 1"]
       target_group_arn = module.load_balancer.api_target_group_arn
     }
-    
-    websocket = {
-      image         = "${var.ecr_repository_url}/websocket:latest"
-      cpu           = var.websocket_cpu
-      memory        = var.websocket_memory
-      port          = var.websocket_port
-      desired_count = var.websocket_desired_count
-      environment = [
-        {
-          name  = "ENVIRONMENT"
-          value = var.environment
-        },
-        {
-          name  = "REDIS_HOST"
-          value = module.redis.primary_endpoint
-        },
-        {
-          name  = "AWS_DEFAULT_REGION"
-          value = var.aws_region
-        }
-      ]
-      secrets = []
-      health_check     = ["CMD-SHELL", "curl -f http://localhost:${var.websocket_port}/ws/health/ || exit 1"]
-      target_group_arn = module.load_balancer.websocket_target_group_arn
-    }
   }
   
   execution_role_arn = module.iam.ecs_execution_role_arn
@@ -248,35 +199,6 @@ module "ecs" {
   security_group_ids = [module.security.ecs_security_group_id]
   subnet_ids        = module.networking.private_subnet_ids
   log_group_name    = module.monitoring.log_group_name
-  
-  # Add target group dependency
-  target_group_arns = [
-    module.load_balancer.api_target_group_arn,
-    module.load_balancer.websocket_target_group_arn
-  ]
-  
-  tags = local.common_tags
-}
-
-module "autoscaling" {
-  source = "../../modules/autoscaling"
-  
-  name_prefix   = local.name_prefix
-  cluster_name  = module.ecs.cluster_name
-  service_names = module.ecs.service_names
-  
-  min_capacity = var.autoscaling_min_capacity
-  max_capacity = var.autoscaling_max_capacity
-  
-  tags = local.common_tags
-}
-
-module "alerts" {
-  source = "../../modules/alerts"
-  
-  name_prefix    = local.name_prefix
-  alert_email    = var.alert_email
-  slack_webhook  = var.slack_webhook_url
   
   tags = local.common_tags
 }
