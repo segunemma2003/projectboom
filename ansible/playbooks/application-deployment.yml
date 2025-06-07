@@ -4,11 +4,12 @@
   vars:
     environment: "{{ env | default('development') }}"
     image_tag: "{{ tag | default('latest') }}"
+    namespace: "social-platform-{{ environment }}"
     
   tasks:
-    - name: Create namespace
+    - name: Create application namespace
       kubernetes.core.k8s:
-        name: "social-platform-{{ environment }}"
+        name: "{{ namespace }}"
         api_version: v1
         kind: Namespace
         state: present
@@ -20,12 +21,13 @@
           kind: Secret
           metadata:
             name: database-credentials
-            namespace: "social-platform-{{ environment }}"
+            namespace: "{{ namespace }}"
           type: Opaque
           data:
             username: "{{ database_username | b64encode }}"
             password: "{{ database_password | b64encode }}"
             host: "{{ database_host | b64encode }}"
+            port: "{{ database_port | default('5432') | b64encode }}"
 
     - name: Deploy Redis configuration
       kubernetes.core.k8s:
@@ -34,10 +36,24 @@
           kind: ConfigMap
           metadata:
             name: redis-config
-            namespace: "social-platform-{{ environment }}"
+            namespace: "{{ namespace }}"
           data:
             redis-host: "{{ redis_host }}"
             redis-port: "6379"
+
+    - name: Deploy application secrets
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: app-secrets
+            namespace: "{{ namespace }}"
+          type: Opaque
+          data:
+            secret-key: "{{ app_secret_key | default('change-me-in-production') | b64encode }}"
+            livekit-api-key: "{{ livekit_api_key | default('') | b64encode }}"
+            livekit-api-secret: "{{ livekit_api_secret | default('') | b64encode }}"
 
     - name: Deploy API application
       kubernetes.core.k8s:
@@ -46,12 +62,18 @@
           kind: Deployment
           metadata:
             name: social-platform-api
-            namespace: "social-platform-{{ environment }}"
+            namespace: "{{ namespace }}"
             labels:
               app: social-platform-api
               environment: "{{ environment }}"
+              version: "{{ image_tag }}"
           spec:
             replicas: "{{ api_replicas | default(3) }}"
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxSurge: 1
+                maxUnavailable: 0
             selector:
               matchLabels:
                 app: social-platform-api
@@ -59,15 +81,20 @@
               metadata:
                 labels:
                   app: social-platform-api
+                  environment: "{{ environment }}"
               spec:
                 containers:
                 - name: api
                   image: "{{ ecr_repository }}/api:{{ image_tag }}"
+                  imagePullPolicy: Always
                   ports:
                   - containerPort: 8000
+                    name: http
                   env:
                   - name: ENVIRONMENT
                     value: "{{ environment }}"
+                  - name: DEBUG
+                    value: "{{ 'True' if environment == 'development' else 'False' }}"
                   - name: DATABASE_HOST
                     valueFrom:
                       secretKeyRef:
@@ -83,11 +110,23 @@
                       secretKeyRef:
                         name: database-credentials
                         key: password
+                  - name: DATABASE_PORT
+                    valueFrom:
+                      secretKeyRef:
+                        name: database-credentials
+                        key: port
                   - name: REDIS_HOST
                     valueFrom:
                       configMapKeyRef:
                         name: redis-config
                         key: redis-host
+                  - name: SECRET_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: app-secrets
+                        key: secret-key
+                  - name: ALLOWED_HOSTS
+                    value: "{{ domain_name }},api.{{ domain_name }}"
                   resources:
                     requests:
                       memory: "512Mi"
@@ -99,14 +138,18 @@
                     httpGet:
                       path: /health/
                       port: 8000
-                    initialDelaySeconds: 30
-                    periodSeconds: 10
+                    initialDelaySeconds: 60
+                    periodSeconds: 30
+                    timeoutSeconds: 10
+                    failureThreshold: 3
                   readinessProbe:
                     httpGet:
                       path: /health/
                       port: 8000
-                    initialDelaySeconds: 5
-                    periodSeconds: 5
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+                    timeoutSeconds: 5
+                    failureThreshold: 3
 
     - name: Deploy API service
       kubernetes.core.k8s:
@@ -115,14 +158,18 @@
           kind: Service
           metadata:
             name: social-platform-api
-            namespace: "social-platform-{{ environment }}"
+            namespace: "{{ namespace }}"
+            labels:
+              app: social-platform-api
           spec:
             selector:
               app: social-platform-api
             ports:
-            - port: 80
+            - name: http
+              port: 80
               targetPort: 8000
-            type: LoadBalancer
+              protocol: TCP
+            type: ClusterIP
 
     - name: Deploy WebSocket application
       kubernetes.core.k8s:
@@ -131,12 +178,18 @@
           kind: Deployment
           metadata:
             name: social-platform-websocket
-            namespace: "social-platform-{{ environment }}"
+            namespace: "{{ namespace }}"
             labels:
               app: social-platform-websocket
               environment: "{{ environment }}"
+              version: "{{ image_tag }}"
           spec:
             replicas: "{{ websocket_replicas | default(2) }}"
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxSurge: 1
+                maxUnavailable: 0
             selector:
               matchLabels:
                 app: social-platform-websocket
@@ -144,12 +197,15 @@
               metadata:
                 labels:
                   app: social-platform-websocket
+                  environment: "{{ environment }}"
               spec:
                 containers:
                 - name: websocket
                   image: "{{ ecr_repository }}/websocket:{{ image_tag }}"
+                  imagePullPolicy: Always
                   ports:
                   - containerPort: 8001
+                    name: websocket
                   env:
                   - name: ENVIRONMENT
                     value: "{{ environment }}"
@@ -165,6 +221,18 @@
                     limits:
                       memory: "1Gi"
                       cpu: "500m"
+                  livenessProbe:
+                    httpGet:
+                      path: /ws/health/
+                      port: 8001
+                    initialDelaySeconds: 30
+                    periodSeconds: 30
+                  readinessProbe:
+                    httpGet:
+                      path: /ws/health/
+                      port: 8001
+                    initialDelaySeconds: 5
+                    periodSeconds: 10
 
     - name: Deploy WebSocket service
       kubernetes.core.k8s:
@@ -173,11 +241,52 @@
           kind: Service
           metadata:
             name: social-platform-websocket
-            namespace: "social-platform-{{ environment }}"
+            namespace: "{{ namespace }}"
+            labels:
+              app: social-platform-websocket
           spec:
             selector:
               app: social-platform-websocket
             ports:
-            - port: 80
+            - name: websocket
+              port: 80
               targetPort: 8001
-            type: LoadBalancer
+              protocol: TCP
+            type: ClusterIP
+
+    - name: Deploy Ingress for applications
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: social-platform-ingress
+            namespace: "{{ namespace }}"
+            annotations:
+              kubernetes.io/ingress.class: alb
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/ssl-redirect: '443'
+              alb.ingress.kubernetes.io/certificate-arn: "{{ ssl_certificate_arn | default('') }}"
+          spec:
+            rules:
+            - host: "api.{{ domain_name }}"
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: social-platform-api
+                      port:
+                        number: 80
+            - host: "ws.{{ domain_name }}"
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: social-platform-websocket
+                      port:
+                        number: 80

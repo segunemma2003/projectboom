@@ -5,8 +5,9 @@ metadata:
   namespace: argocd
   labels:
     environment: staging
+    app.kubernetes.io/name: social-platform
 spec:
-  project: default
+  project: social-platform
   source:
     repoURL: https://bitbucket.org/yourorg/social-platform-k8s-manifests
     targetRevision: staging

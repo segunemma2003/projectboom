@@ -1,0 +1,35 @@
+
+domain_name: yourdomain.com
+aws_account_id: "123456789012"
+
+# Resource scaling for production
+api_replicas: 5
+websocket_replicas: 3
+
+# Production resource limits
+api_resources:
+  requests:
+    memory: "1Gi"
+    cpu: "500m"
+  limits:
+    memory: "4Gi"
+    cpu: "2000m"
+
+websocket_resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "2Gi"
+    cpu: "1000m"
+
+# SSL certificate ARN for production
+ssl_certificate_arn: "arn:aws:acm:{{ aws_region }}:{{ aws_account_id }}:certificate/your-cert-id"
+
+# Monitoring configuration
+monitoring_enabled: true
+datadog_enabled: true
+
+# Backup configuration
+backup_retention_days: 30
+log_retention_days: 90

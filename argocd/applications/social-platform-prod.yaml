@@ -5,8 +5,9 @@ metadata:
   namespace: argocd
   labels:
     environment: production
+    app.kubernetes.io/name: social-platform
 spec:
-  project: default
+  project: social-platform
   source:
     repoURL: https://bitbucket.org/yourorg/social-platform-k8s-manifests
     targetRevision: main
@@ -25,3 +26,8 @@ spec:
         duration: 5s
         factor: 2
         maxDuration: 3m
+  ignoreDifferences:
+  - group: apps
+    kind: Deployment
+    jsonPointers:
+    - /spec/replicas

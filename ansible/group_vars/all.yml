@@ -1,0 +1,41 @@
+ansible_user: ubuntu
+ansible_ssh_private_key_file: "{{ ansible_ssh_key_path | default('~/.ssh/id_rsa') }}"
+ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+
+# Project configuration
+project_name: social-platform
+aws_region: eu-west-1
+
+# Docker/ECR configuration
+docker_registry: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com"
+ecr_repository: "{{ docker_registry }}/{{ project_name }}"
+
+# Default resource limits
+default_api_resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "2Gi"
+    cpu: "1000m"
+
+default_websocket_resources:
+  requests:
+    memory: "256Mi"
+    cpu: "125m"
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+
+# Health check configuration
+health_check_config:
+  liveness_probe:
+    initial_delay_seconds: 60
+    period_seconds: 30
+    timeout_seconds: 10
+    failure_threshold: 3
+  readiness_probe:
+    initial_delay_seconds: 10
+    period_seconds: 10
+    timeout_seconds: 5
+    failure_threshold: 3

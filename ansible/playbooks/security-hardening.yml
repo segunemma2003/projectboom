@@ -1,6 +1,6 @@
 - name: Security Hardening for Social Media Platform
   hosts: all
-  become: yes
+  become: true
   vars:
     fail2ban_enabled: true
     ufw_enabled: true
@@ -11,6 +11,7 @@
         update_cache: yes
         upgrade: dist
         autoremove: yes
+      when: ansible_os_family == "Debian"
 
     - name: Install security packages
       apt:
@@ -21,17 +22,47 @@
           - aide
           - rkhunter
           - chkrootkit
+          - htop
+          - netstat-nat
         state: present
+      when: ansible_os_family == "Debian"
 
-    - name: Configure automatic security updates
-      template:
-        src: 50unattended-upgrades.j2
+    - name: Create unattended-upgrades configuration
+      copy:
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}";
+              "${distro_id}:${distro_codename}-security";
+              "${distro_id}ESMApps:${distro_codename}-apps-security";
+              "${distro_id}ESM:${distro_codename}-infra-security";
+          };
+          Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+          Unattended-Upgrade::MinimalSteps "true";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+          Unattended-Upgrade::Automatic-Reboot "false";
         dest: /etc/apt/apt.conf.d/50unattended-upgrades
         backup: yes
 
-    - name: Configure fail2ban
-      template:
-        src: jail.local.j2
+    - name: Create fail2ban jail configuration
+      copy:
+        content: |
+          [DEFAULT]
+          bantime = 3600
+          findtime = 600
+          maxretry = 3
+          
+          [sshd]
+          enabled = true
+          port = ssh
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 3
+          
+          [nginx-http-auth]
+          enabled = true
+          filter = nginx-http-auth
+          port = http,https
+          logpath = /var/log/nginx/error.log
         dest: /etc/fail2ban/jail.local
         backup: yes
       notify: restart fail2ban
@@ -42,23 +73,26 @@
         enabled: yes
         state: started
 
-    - name: Configure UFW firewall
+    - name: Configure UFW firewall rules
       ufw:
         rule: "{{ item.rule }}"
         port: "{{ item.port }}"
         proto: "{{ item.proto | default('tcp') }}"
+        comment: "{{ item.comment | default('') }}"
       loop:
-        - { rule: 'allow', port: '22' }
-        - { rule: 'allow', port: '80' }
-        - { rule: 'allow', port: '443' }
-        - { rule: 'allow', port: '8000' }
-        - { rule: 'allow', port: '8001' }
+        - { rule: 'allow', port: '22', comment: 'SSH' }
+        - { rule: 'allow', port: '80', comment: 'HTTP' }
+        - { rule: 'allow', port: '443', comment: 'HTTPS' }
+        - { rule: 'allow', port: '8000', comment: 'API' }
+        - { rule: 'allow', port: '8001', comment: 'WebSocket' }
+        - { rule: 'allow', port: '6443', comment: 'Kubernetes API' }
       when: ufw_enabled
 
-    - name: Enable UFW
+    - name: Enable UFW with default deny policy
       ufw:
         state: enabled
         policy: deny
+        direction: incoming
       when: ufw_enabled
 
     - name: Disable unnecessary services
@@ -70,9 +104,9 @@
         - cups
         - avahi-daemon
         - bluetooth
-      ignore_errors: yes
+      ignore_errors: true
 
-    - name: Set file permissions
+    - name: Set secure file permissions
       file:
         path: "{{ item.path }}"
         mode: "{{ item.mode }}"
@@ -80,12 +114,33 @@
         group: "{{ item.group | default('root') }}"
       loop:
         - { path: '/etc/passwd', mode: '0644' }
-        - { path: '/etc/shadow', mode: '0640' }
+        - { path: '/etc/shadow', mode: '0640', group: 'shadow' }
         - { path: '/etc/group', mode: '0644' }
-        - { path: '/etc/gshadow', mode: '0640' }
+        - { path: '/etc/gshadow', mode: '0640', group: 'shadow' }
+        - { path: '/boot', mode: '0700' }
+
+    - name: Configure SSH hardening
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        backup: yes
+      loop:
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
+        - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
+        - { regexp: '^#?ClientAliveCountMax', line: 'ClientAliveCountMax 2' }
+      notify: restart sshd
 
   handlers:
     - name: restart fail2ban
       systemd:
         name: fail2ban
+        state: restarted
+
+    - name: restart sshd
+      systemd:
+        name: sshd
         state: restarted

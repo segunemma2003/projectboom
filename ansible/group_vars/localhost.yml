@@ -1,0 +1,16 @@
+ansible_connection: local
+ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+# Kubernetes configuration
+kubernetes_context: "{{ project_name }}-{{ environment }}"
+helm_timeout: "15m"
+
+# ArgoCD configuration
+argocd_namespace: argocd
+argocd_admin_password: "{{ vault_argocd_admin_password | default('admin123') }}"
+
+# Grafana configuration
+grafana_admin_password: "{{ vault_grafana_admin_password | default('admin123') }}"
+
+# DataDog configuration (if enabled)
+datadog_api_key: "{{ vault_datadog_api_key | default('') }}"

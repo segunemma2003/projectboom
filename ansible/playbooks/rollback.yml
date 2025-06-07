@@ -1,0 +1,70 @@
+- name: Rollback Social Media Platform Deployment
+  hosts: localhost
+  gather_facts: false
+  vars:
+    environment: "{{ env | default('development') }}"
+    namespace: "social-platform-{{ environment }}"
+    rollback_revision: "{{ revision | default('previous') }}"
+    
+  tasks:
+    - name: Get current API deployment
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: social-platform-api
+        namespace: "{{ namespace }}"
+      register: current_api_deployment
+
+    - name: Get current WebSocket deployment
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: social-platform-websocket
+        namespace: "{{ namespace }}"
+      register: current_websocket_deployment
+
+    - name: Rollback API deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: social-platform-api
+            namespace: "{{ namespace }}"
+            annotations:
+              deployment.kubernetes.io/revision: "{{ rollback_revision }}"
+          spec: "{{ current_api_deployment.resources[0].spec }}"
+      when: current_api_deployment.resources
+
+    - name: Rollback WebSocket deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: social-platform-websocket
+            namespace: "{{ namespace }}"
+            annotations:
+              deployment.kubernetes.io/revision: "{{ rollback_revision }}"
+          spec: "{{ current_websocket_deployment.resources[0].spec }}"
+      when: current_websocket_deployment.resources
+
+    - name: Wait for rollback to complete
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ item }}"
+        namespace: "{{ namespace }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 300
+      loop:
+        - social-platform-api
+        - social-platform-websocket
+
+    - name: Validate rollback
+      include_tasks: validate-deployment.yml

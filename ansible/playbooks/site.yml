@@ -1,0 +1,25 @@
+- name: Complete Social Media Platform Deployment
+  hosts: localhost
+  gather_facts: false
+  vars:
+    environment: "{{ env | default('development') }}"
+    
+  tasks:
+    - name: Include environment-specific variables
+      include_vars: "../group_vars/{{ environment }}.yml"
+      
+    - name: Include vault variables
+      include_vars: "../vault/{{ environment }}.yml"
+      when: environment in ['staging', 'production']
+
+# Infrastructure Setup
+- import_playbook: infrastructure-setup.yml
+  when: setup_infrastructure | default(false) | bool
+
+# Security Hardening
+- import_playbook: security-hardening.yml
+  when: setup_security | default(false) | bool
+
+# Application Deployment
+- import_playbook: application-deployment.yml
+  when: deploy_application | default(true) | bool

@@ -5,93 +5,145 @@
     environment: "{{ env | default('development') }}"
     aws_region: "{{ region | default('eu-west-1') }}"
     project_name: social-platform
+    cluster_name: "{{ project_name }}-{{ environment }}"
     
   tasks:
-    - name: Install required packages
+    - name: Install required Python packages
       pip:
         name:
           - boto3
           - botocore
           - kubernetes
           - openshift
+          - pyyaml
         state: present
 
-    - name: Create EKS cluster for ArgoCD
+    - name: Add Helm repositories
+      kubernetes.core.helm_repository:
+        name: "{{ item.name }}"
+        repo_url: "{{ item.url }}"
+      loop:
+        - name: argo
+          url: https://argoproj.github.io/argo-helm
+        - name: prometheus-community
+          url: https://prometheus-community.github.io/helm-charts
+        - name: datadog
+          url: https://helm.datadoghq.com
+
+    - name: Create ArgoCD namespace
       kubernetes.core.k8s:
-        name: "{{ project_name }}-{{ environment }}"
-        api_version: eksctl.io/v1alpha5
-        kind: ClusterConfig
-        definition:
-          metadata:
-            name: "{{ project_name }}-{{ environment }}"
-            region: "{{ aws_region }}"
-          nodeGroups:
-            - name: managed-nodes
-              instanceType: t3.medium
-              desiredCapacity: 3
-              minSize: 2
-              maxSize: 10
-              volumeSize: 20
-              ssh:
-                allow: true
-          addons:
-            - name: vpc-cni
-            - name: coredns
-            - name: kube-proxy
-            - name: aws-ebs-csi-driver
+        name: argocd
+        api_version: v1
+        kind: Namespace
+        state: present
 
     - name: Install ArgoCD
       kubernetes.core.helm:
         name: argocd
         chart_ref: argo/argo-cd
         release_namespace: argocd
-        create_namespace: true
+        create_namespace: false
+        wait: true
+        timeout: "10m"
         values:
           server:
             service:
               type: LoadBalancer
             config:
-              url: "https://argocd.{{ domain_name }}"
+              url: "https://argocd.{{ domain_name | default('localhost') }}"
             extraArgs:
               - --insecure
           configs:
             secret:
-              argocdServerAdminPassword: "{{ argocd_admin_password | password_hash('bcrypt') }}"
+              argocdServerAdminPassword: "{{ argocd_admin_password | default('admin123') | password_hash('bcrypt') }}"
+            cm:
+              accounts.admin: apiKey, login
+              accounts.readonly: apiKey
+
+    - name: Wait for ArgoCD to be ready
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: argocd
+        label_selectors:
+          - app.kubernetes.io/name=argocd-server
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 600
+
+    - name: Create monitoring namespace
+      kubernetes.core.k8s:
+        name: monitoring
+        api_version: v1
+        kind: Namespace
+        state: present
 
     - name: Install Prometheus and Grafana
       kubernetes.core.helm:
         name: kube-prometheus-stack
         chart_ref: prometheus-community/kube-prometheus-stack
         release_namespace: monitoring
-        create_namespace: true
+        create_namespace: false
+        wait: true
+        timeout: "15m"
         values:
           grafana:
             service:
               type: LoadBalancer
-            adminPassword: "{{ grafana_admin_password }}"
-
-    - name: Configure DataDog agent
-      kubernetes.core.k8s:
-        definition:
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: datadog-secret
-            namespace: default
-          data:
-            api-key: "{{ datadog_api_key | b64encode }}"
-
-    - name: Deploy DataDog agent
-      kubernetes.core.helm:
-        name: datadog
-        chart_ref: datadog/datadog
-        release_namespace: datadog
-        create_namespace: true
-        values:
-          datadog:
-            apiKeyExistingSecret: datadog-secret
-            site: datadoghq.com
-            logs:
+            adminPassword: "{{ grafana_admin_password | default('admin123') }}"
+            persistence:
               enabled: true
-            apm:
-              enabled: true
+              size: 10Gi
+          prometheus:
+            prometheusSpec:
+              retention: 30d
+              storageSpec:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 50Gi
+
+    - name: Configure DataDog agent (if API key provided)
+      block:
+        - name: Create DataDog namespace
+          kubernetes.core.k8s:
+            name: datadog
+            api_version: v1
+            kind: Namespace
+            state: present
+
+        - name: Create DataDog secret
+          kubernetes.core.k8s:
+            definition:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: datadog-secret
+                namespace: datadog
+              type: Opaque
+              data:
+                api-key: "{{ datadog_api_key | b64encode }}"
+
+        - name: Deploy DataDog agent
+          kubernetes.core.helm:
+            name: datadog
+            chart_ref: datadog/datadog
+            release_namespace: datadog
+            create_namespace: false
+            wait: true
+            values:
+              datadog:
+                apiKeyExistingSecret: datadog-secret
+                site: datadoghq.com
+                logs:
+                  enabled: true
+                  containerCollectAll: true
+                apm:
+                  enabled: true
+                processAgent:
+                  enabled: true
+      when: datadog_api_key is defined and datadog_api_key != ""

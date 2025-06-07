@@ -4,37 +4,50 @@ all:
       children:
         production:
           hosts:
+            # Use dynamic IPs or actual EC2 instance IPs
             social-platform-prod-1:
-              ansible_host: 10.0.1.10
+              ansible_host: "{{ hostvars['social-platform-prod-1']['ansible_host'] | default('auto') }}"
               ansible_user: ubuntu
               environment: production
             social-platform-prod-2:
-              ansible_host: 10.0.2.10
+              ansible_host: "{{ hostvars['social-platform-prod-2']['ansible_host'] | default('auto') }}"
               ansible_user: ubuntu
               environment: production
             social-platform-prod-3:
-              ansible_host: 10.0.3.10
+              ansible_host: "{{ hostvars['social-platform-prod-3']['ansible_host'] | default('auto') }}"
               ansible_user: ubuntu
               environment: production
           vars:
             environment: production
             domain_name: yourdomain.com
+            # Use Ansible Vault for sensitive data
             database_host: "{{ vault_database_host }}"
             database_username: "{{ vault_database_username }}"
             database_password: "{{ vault_database_password }}"
             redis_host: "{{ vault_redis_host }}"
-            ecr_repository: "123456789012.dkr.ecr.eu-west-1.amazonaws.com/social-platform"
+            ecr_repository: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com/social-platform"
+            aws_account_id: "123456789012"
+            aws_region: "eu-west-1"
             api_replicas: 5
             websocket_replicas: 3
     
     staging:
-      hosts:
-        social-platform-staging-1:
-          ansible_host: 10.1.1.10
-          ansible_user: ubuntu
-          environment: staging
-      vars:
-        environment: staging
-        domain_name: staging.yourdomain.com
-        api_replicas: 2
-        websocket_replicas: 1
+      children:
+        staging_servers:
+          hosts:
+            social-platform-staging-1:
+              ansible_host: "{{ hostvars['social-platform-staging-1']['ansible_host'] | default('auto') }}"
+              ansible_user: ubuntu
+              environment: staging
+          vars:
+            environment: staging
+            domain_name: staging.yourdomain.com
+            database_host: "{{ vault_staging_database_host }}"
+            database_username: "{{ vault_staging_database_username }}"
+            database_password: "{{ vault_staging_database_password }}"
+            redis_host: "{{ vault_staging_redis_host }}"
+            ecr_repository: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com/social-platform"
+            aws_account_id: "123456789012"
+            aws_region: "eu-west-1"
+            api_replicas: 2
+            websocket_replicas: 1

@@ -1,0 +1,80 @@
+- name: Validate Social Media Platform Deployment
+  hosts: localhost
+  gather_facts: false
+  vars:
+    environment: "{{ env | default('development') }}"
+    namespace: "social-platform-{{ environment }}"
+    timeout: 300
+    
+  tasks:
+    - name: Wait for API deployment to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: social-platform-api
+        namespace: "{{ namespace }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: "{{ timeout }}"
+
+    - name: Wait for WebSocket deployment to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: social-platform-websocket
+        namespace: "{{ namespace }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: "{{ timeout }}"
+
+    - name: Get API service status
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: social-platform-api
+        namespace: "{{ namespace }}"
+      register: api_service
+
+    - name: Get WebSocket service status
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: social-platform-websocket
+        namespace: "{{ namespace }}"
+      register: websocket_service
+
+    - name: Test API health endpoint
+      uri:
+        url: "https://api.{{ domain_name }}/health/"
+        method: GET
+        timeout: 10
+        status_code: 200
+      register: api_health_check
+      retries: 5
+      delay: 10
+      when: environment != 'development'
+
+    - name: Test WebSocket health endpoint
+      uri:
+        url: "https://ws.{{ domain_name }}/ws/health/"
+        method: GET
+        timeout: 10
+        status_code: 200
+      register: websocket_health_check
+      retries: 5
+      delay: 10
+      when: environment != 'development'
+
+    - name: Display deployment status
+      debug:
+        msg: |
+          Deployment Status for {{ environment }}:
+          =====================================
+          API Service: {{ 'Ready' if api_service.resources else 'Not Ready' }}
+          WebSocket Service: {{ 'Ready' if websocket_service.resources else 'Not Ready' }}
+          API Health: {{ 'OK' if api_health_check.status == 200 else 'Failed' }}
+          WebSocket Health: {{ 'OK' if websocket_health_check.status == 200 else 'Failed' }}

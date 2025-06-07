@@ -1,0 +1,21 @@
+domain_name: staging.yourdomain.com
+aws_account_id: "123456789012"
+
+# Resource scaling for staging
+api_replicas: 2
+websocket_replicas: 1
+
+# Staging resource limits (smaller than prod)
+api_resources: "{{ default_api_resources }}"
+websocket_resources: "{{ default_websocket_resources }}"
+
+# SSL certificate ARN for staging
+ssl_certificate_arn: "arn:aws:acm:{{ aws_region }}:{{ aws_account_id }}:certificate/your-staging-cert-id"
+
+# Monitoring configuration
+monitoring_enabled: true
+datadog_enabled: false
+
+# Backup configuration
+backup_retention_days: 7
+log_retention_days: 30
